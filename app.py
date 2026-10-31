@@ -11,6 +11,7 @@ from pathlib import Path
 
 from model_assets import ensure_models, models_ready
 from job_control import JobControl, JobStopped
+from inference_length import resolve_length
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -276,7 +277,8 @@ async def save_upload(upload, target):
 @app.post('/api/jobs')
 async def create_job(video: UploadFile | None = File(None), hint: UploadFile | None = File(None),
                      source: str = Form(''), quality: float = Form(.95), carry: bool = Form(True),
-                     saved_source: str = Form(''), saved_hint: str = Form(''), project_id: str = Form('default')):
+                     saved_source: str = Form(''), saved_hint: str = Form(''), project_id: str = Form('default'),
+                     length_mode: str = Form('full'), frame_count: str = Form(''), seconds: str = Form('')):
     if not project_path(project_id).exists():
         raise HTTPException(404, 'Project not found')
     if not 0 <= quality <= 1:
@@ -302,6 +304,10 @@ async def create_job(video: UploadFile | None = File(None), hint: UploadFile | N
         info = probe(path)
     except Exception:
         raise HTTPException(400, 'Cannot decode the source video.')
+    try:
+        processing_length = resolve_length(length_mode, frame_count, seconds, info['fps'])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     hint_path = None
     if saved_hint:
         hint_path = asset_path(saved_hint)
@@ -321,13 +327,14 @@ async def create_job(video: UploadFile | None = File(None), hint: UploadFile | N
     out.mkdir()
     cmd = [sys.executable, '-u', str(ROOT/'engine/infer.py'), '--input', str(path),
            '--output_dir', str(out), '--outputs', 'alpha', 'fg', 'checker', 'cutout',
-           '--pix_fmt', 'yuv420p', '--hint_quality', str(quality)]
+           '--pix_fmt', 'yuv420p', '--hint_quality', str(quality),
+           '--num_frames', str(processing_length['num_frames']), '--start_mode', 'begin']
     if hint_path:
         cmd += ['--hint_video', str(hint_path)]
     if not carry:
         cmd += ['--no_carry_hint']
     jobs[jid] = dict(id=jid, name=name, status='queued', files=[], metadata=info, hinted=bool(hint_path),
-                     project_id=project_id, created_at=time.time())
+                     project_id=project_id, created_at=time.time(), processing_length=processing_length)
     (out/'job.json').write_text(json.dumps(jobs[jid]), encoding='utf-8')
     pending.put((jid, cmd, out))
     return jobs[jid]
@@ -391,6 +398,9 @@ def worker():
                 job['status'] = 'running'
             env = dict(os.environ, PYTHONUNBUFFERED='1', HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1')
             with (out/'inference.log').open('w', encoding='utf-8') as log:
+                print('Processing length: '+job.get('processing_length', {}).get('label', 'Full shot')+
+                      '. Limited runs start at the beginning and stop at the end of the source if shorter.',
+                      file=log, flush=True)
                 if not models_ready(ROOT):
                     with job_control.lock:
                         job_control.check(jid)
