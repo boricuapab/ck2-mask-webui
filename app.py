@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 from model_assets import ensure_models, models_ready
+from job_control import JobControl, JobStopped
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -25,6 +26,8 @@ for folder in ('inputs', 'inputs/converted', 'models', 'outputs', 'projects', 'c
     (ROOT / folder).mkdir(exist_ok=True)
 app = FastAPI(title='CorridorKey Local')
 jobs = {}
+job_control = JobControl()
+ACTIVE_JOB_STATUSES = {'queued', 'downloading', 'running', 'stopping'}
 pending = queue.Queue()
 EXTENSIONS = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.m4v'}
 state_lock = threading.Lock()
@@ -329,39 +332,106 @@ async def create_job(video: UploadFile | None = File(None), hint: UploadFile | N
     pending.put((jid, cmd, out))
     return jobs[jid]
 
+def save_job(job):
+    # Callers hold job_control.lock so clearing and finalization cannot overwrite each other.
+    path = ROOT/'outputs'/job['id']/'job.json'
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(job), encoding='utf-8')
+    temporary.replace(path)
+
+
+def get_job(jid):
+    if not jid.isalnum():
+        raise HTTPException(404, 'Render not found')
+    if jid in jobs:
+        return jobs[jid]
+    path = ROOT/'outputs'/jid/'job.json'
+    if not path.is_file():
+        raise HTTPException(404, 'Render not found')
+    job = json.loads(path.read_text(encoding='utf-8'))
+    if job['status'] in ACTIVE_JOB_STATUSES:
+        job['status'] = 'interrupted'
+    return job
+
+
+@app.post('/api/jobs/{jid}/stop')
+def stop_job(jid: str):
+    with job_control.lock:
+        job = get_job(jid)
+        if job['status'] not in ACTIVE_JOB_STATUSES:
+            return {'status': job['status']}
+        queued = job['status'] == 'queued'
+        job['status'] = 'stopped' if queued else 'stopping'
+        save_job(job)
+        try:
+            job_control.cancel(jid)
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(500, str(exc))
+        return {'status': job['status']}
+
+
+@app.post('/api/jobs/{jid}/clear')
+def clear_job(jid: str):
+    with job_control.lock:
+        job = get_job(jid)
+        if job['status'] in ACTIVE_JOB_STATUSES:
+            raise HTTPException(409, 'Stop this run before clearing it from the UI.')
+        job['hidden'] = True
+        save_job(job)
+        return {'status': 'cleared'}
+
+
 def worker():
     while True:
         jid, cmd, out = pending.get()
         job = jobs[jid]
-        job['status'] = 'running'
         try:
+            with job_control.lock:
+                job_control.check(jid)
+                job['status'] = 'running'
             env = dict(os.environ, PYTHONUNBUFFERED='1', HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1')
             with (out/'inference.log').open('w', encoding='utf-8') as log:
                 if not models_ready(ROOT):
-                    job['status'] = 'downloading'
-                    ensure_models(ROOT, log)
-                job['status'] = 'running'
+                    with job_control.lock:
+                        job_control.check(jid)
+                        job['status'] = 'downloading'
+                    ensure_models(ROOT, log, runner=lambda cmd, **kwargs: job_control.run(jid, cmd, **kwargs))
+                with job_control.lock:
+                    job_control.check(jid)
+                    job['status'] = 'running'
                 inference_started = time.perf_counter()
-                process = subprocess.Popen(cmd, cwd=ROOT/'engine', stdout=log, stderr=subprocess.STDOUT, env=env)
-                code = process.wait()
-                job['inference_seconds'] = round(time.perf_counter() - inference_started, 2)
+                try:
+                    code = job_control.run(jid, cmd, cwd=ROOT/'engine', stdout=log,
+                                           stderr=subprocess.STDOUT, env=env).returncode
+                finally:
+                    job['inference_seconds'] = round(time.perf_counter() - inference_started, 2)
                 outcome = 'completed' if code == 0 else 'failed'
                 print(f"\nInference {outcome} in {job['inference_seconds']:.2f} seconds (excluding queue wait and model downloads).", file=log, flush=True)
-            job['status'] = 'complete' if code == 0 else 'failed'
-            job['files'] = [p.name for p in out.iterdir() if p.suffix in {'.mp4', '.mov'}]
+            with job_control.lock:
+                job_control.check(jid)
+                job['status'] = 'complete' if code == 0 else 'failed'
+                job['files'] = [p.name for p in out.iterdir() if p.suffix in {'.mp4', '.mov'}]
+        except JobStopped:
+            job.update(status='stopped', files=[])
+            with (out/'inference.log').open('a', encoding='utf-8') as log:
+                duration = f" after {job['inference_seconds']:.2f} seconds of inference" if 'inference_seconds' in job else ''
+                print(f'\nRun stopped by user{duration}. Partial outputs are not shown.', file=log, flush=True)
         except Exception as e:
             job.update(status='failed', error=str(e))
-        (out/'job.json').write_text(json.dumps(job), encoding='utf-8')
-        pending.task_done()
+        finally:
+            with job_control.lock:
+                save_job(job)
+                job_control.forget(jid)
+            pending.task_done()
 
 @app.get('/api/jobs')
 def list_jobs(project_id: str = 'default'):
     result = []
     for p in sorted((ROOT/'outputs').glob('*/job.json'), key=lambda p:p.stat().st_mtime, reverse=True):
         j = jobs.get(p.parent.name) or json.loads(p.read_text(encoding='utf-8'))
-        if j.get('project_id', 'default') != project_id:
+        if j.get('hidden') or j.get('project_id', 'default') != project_id:
             continue
-        if j['id'] not in jobs and j['status'] in {'queued', 'downloading', 'running'}:
+        if j['id'] not in jobs and j['status'] in ACTIVE_JOB_STATUSES:
             j['status'] = 'interrupted'
         log = p.parent/'inference.log'
         j = dict(j, files=[f for f in j.get('files', []) if Path(f).name == f and (p.parent/f).is_file()],

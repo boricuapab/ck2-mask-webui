@@ -52,13 +52,24 @@ async function refreshConversions(){
  }
  }catch(e){console.error(e)}finally{conversionRefreshing=false}
 }
+async function renderAction(id,action,button,error){
+ button.disabled=true;error.textContent='';
+ try{
+  const response=await fetch(`/api/jobs/${id}/${action}`,{method:'POST'});
+  if(!response.ok){const data=await response.json();throw Error(data.detail||'Could not update this render')}
+  await refresh();
+ }catch(e){error.textContent=e.message}
+ finally{button.disabled=false}
+}
 async function refresh(){
  if(refreshing)return;
  refreshing=true;
  try{
   const requestedProject=projectId;const r=await fetch('/api/jobs?project_id='+requestedProject,{cache:'no-store'});if(!r.ok)throw Error('Queue unavailable');
   const list=await r.json();if(requestedProject!==projectId)return;const root=$('#jobs');const selectedName=ui.sourceAsset?.name||ui.source;const selectedJob=list.find(j=>j.name===selectedName);$('#selectedRenderStatus').textContent=selectedName?(selectedJob?(selectedJob.status==='complete'?'Masked result ready for selected footage.':`Selected footage: ${selectedJob.status} · masked preview appears when processing completes.`):'Selected footage has not been keyed yet. Click Process on GPU to generate its masked result.'):'';
-  if(!list.length&&!jobCards.size){root.textContent='Your processed clips will appear here.';return}
+  const visibleIds=new Set(list.map(j=>j.id));
+  for(const [id,card] of jobCards){if(!visibleIds.has(id)){for(const video of card.media.querySelectorAll('video')){video.pause();video.removeAttribute('src');video.load()}card.el.remove();jobCards.delete(id)}}
+  if(!list.length){root.textContent='Your processed clips will appear here.';return}
   for(const j of list){
    let card=jobCards.get(j.id);
    if(!card){
@@ -69,14 +80,26 @@ async function refresh(){
     const progress=document.createElement('div');progress.className='progress';progress.setAttribute('role','progressbar');progress.setAttribute('aria-label','Render progress');progress.setAttribute('aria-valuemin','0');progress.setAttribute('aria-valuemax','100');const fill=document.createElement('div');fill.className='progress-fill';const progressLabel=document.createElement('div');progressLabel.className='progress-label';progress.append(fill,progressLabel);const media=document.createElement('div');const links=document.createElement('div');
     const details=document.createElement('details');const summary=document.createElement('summary');summary.textContent='Processing log';
     details.open=!!ui.logs?.[j.id];details.addEventListener('toggle',()=>{ui.logs??={};ui.logs[j.id]=details.open;scheduleSave()});const pre=document.createElement('pre');details.append(summary,pre);el.append(title,state,progress,media,links,details);
-    card={el,state,progress,fill,progressLabel,media,links,pre,details,files:new Set()};jobCards.set(j.id,card);root.append(el);
+    const actions=document.createElement('div');actions.className='row';actions.style.marginTop='14px';
+    const stop=document.createElement('button');stop.type='button';stop.textContent='Stop run';stop.style.width='auto';
+    const clear=document.createElement('button');clear.type='button';clear.textContent='Clear from UI';clear.style.width='auto';clear.title='Hide this render from history. Files on disk are kept.';
+    const actionError=document.createElement('p');actionError.setAttribute('role','alert');actionError.style.color='#ffb7a6';
+    stop.addEventListener('click',()=>renderAction(j.id,'stop',stop,actionError));
+    clear.addEventListener('click',()=>renderAction(j.id,'clear',clear,actionError));
+    actions.append(stop,clear);el.append(actions,actionError);
+    card={el,state,progress,fill,progressLabel,media,links,pre,details,stop,clear,files:new Set()};jobCards.set(j.id,card);root.append(el);
    }
    const elapsed=Number.isFinite(j.inference_seconds)?` · ${formatDuration(j.inference_seconds)}`:'';
-   card.state.textContent=j.status+(['complete','failed'].includes(j.status)?elapsed:'')+(j.hinted?' · hint video':' · automatic key')+(j.status==='complete'&&!j.files.length?' · output files unavailable':'');
+   const active=['queued','downloading','running','stopping'].includes(j.status);
+   card.stop.hidden=!active;card.stop.textContent=j.status==='stopping'?'Stopping… / retry':'Stop run';
+   card.clear.disabled=active;card.clear.title=active?'Stop the run before clearing it.':'Hide this render from history. Files on disk are kept.';
+   card.state.textContent=j.status+(['complete','failed','stopped'].includes(j.status)?elapsed:'')+(j.hinted?' · hint video':' · automatic key')+(j.status==='complete'&&!j.files.length?' · output files unavailable':'');
    card.pre.textContent=j.log||j.error||'Waiting for GPU…';
    const windows=[...(j.log||'').matchAll(/window (\d+)\/(\d+)/g)];const last=windows.at(-1);
    let percent=0,label='Queued · waiting for GPU',busy=false;
    if(j.status==='complete'){percent=100;label='Complete · 100%'+elapsed}
+   else if(j.status==='stopped'){label='Stopped'+elapsed}
+   else if(j.status==='stopping'){busy=true;label='Stopping run and releasing GPU…'}
    else if(j.status==='downloading'){busy=true;label='Downloading inference models… see processing log'}
    else if(j.status==='running'){
     if(last){const done=Math.max(0,Number(last[1])-1),total=Number(last[2]);percent=Math.min(99,100*done/total);label=`Temporal processing · ${done}/${total} windows · ${Math.floor(percent)}%`;if(Number(last[1])===total)label=`Final window / writing outputs · ${Math.floor(percent)}%`}

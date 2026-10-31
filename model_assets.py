@@ -30,7 +30,7 @@ def models_ready(root):
                for name in REQUIRED_FILES)
 
 
-def ensure_models(root, log):
+def ensure_models(root, log, runner=None):
     root = Path(root).resolve()
     if models_ready(root):
         return
@@ -38,7 +38,7 @@ def ensure_models(root, log):
           file=log, flush=True)
     env = dict(os.environ, PYTHONUNBUFFERED='1', HF_HUB_OFFLINE='0',
                TRANSFORMERS_OFFLINE='0', HF_HOME=str(root / '.cache' / 'huggingface'))
-    subprocess.run(
+    (runner or subprocess.run)(
         [sys.executable, '-u', str(root / 'engine/scripts/download_weights.py'),
          '--package_root', str(root / 'models')],
         cwd=root, stdout=log, stderr=subprocess.STDOUT, env=env, check=True,
