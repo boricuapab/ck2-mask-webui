@@ -86,3 +86,33 @@ The inference engine and its notices are retained in `engine/`, including the ve
 This derivative is distributed under the **Corridor Key Licence**, reproduced in [LICENSE](LICENSE) and [engine/LICENSE](engine/LICENSE). Read the complete license and its additional terms before use or redistribution. Third-party components retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [MoGe's license](engine/third_party/MoGe/LICENSE).
 
 Original project: **[CorridorKey 2.0 by Corridor Digital](https://github.com/nikopueringer/CorridorKey2.0)**.
+
+## Development checks
+
+After installing the environment, run the model-download and CUDA attention tests:
+
+```powershell
+uv run --locked --no-sync python -m unittest discover -s tests -p test_model_download.py -v
+uv run --locked --no-sync python -m unittest discover -s tests -p test_attention_dtype.py -v
+```
+
+The download tests mock network requests. The attention regression test requires CUDA and is skipped when CUDA is unavailable.
+
+To run the complete suite, start the app in one terminal:
+
+```powershell
+uv run --locked --no-sync app.py
+```
+
+Then run all tests in another terminal from the repository root:
+
+```powershell
+uv run --locked --no-sync python -m unittest discover -s tests -v
+```
+
+Session, conversion, and frame-rate integration tests require that running server and FFmpeg/FFprobe on PATH. They create synthetic footage and clean up their test assets. By default they connect to `http://127.0.0.1:7888`. To test an instance on a different port, set `CK2_TEST_URL` before running the suite:
+
+```powershell
+$env:CK2_TEST_URL = 'http://127.0.0.1:17888'
+uv run --locked --no-sync python -m unittest discover -s tests -v
+```
