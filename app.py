@@ -12,6 +12,7 @@ from pathlib import Path
 from model_assets import ensure_models, models_ready
 from job_control import JobControl, JobStopped
 from inference_length import resolve_length
+from chunk_settings import apply_chunk, suggest_chunk, validate_chunk
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -256,6 +257,33 @@ def library_video(name: str):
         raise HTTPException(404)
     return FileResponse(path)
 
+def gpu_memory():
+    import torch
+    if not torch.cuda.is_available():
+        return None
+    free, total = torch.cuda.mem_get_info()
+    return dict(free_gib=free/2**30, total_gib=total/2**30,
+                gpu=torch.cuda.get_device_name(0))
+
+
+@app.post('/api/chunk-suggestion')
+def chunk_suggestion(data: dict = Body(...)):
+    source = asset_path(data.get('asset_id')) if data.get('asset_id') else next(
+        (p for p in library() if p.name == data.get('source')), None)
+    if source is None:
+        raise HTTPException(400, 'Select footage to see a chunk recommendation.')
+    gpu = gpu_memory()
+    if gpu is None:
+        raise HTTPException(400, 'A CUDA GPU is required for a chunk recommendation.')
+    try:
+        info = probe(source)
+        length = resolve_length(data.get('length_mode', 'full'), data.get('frame_count', ''),
+                                data.get('seconds', ''), info['fps'])
+        return dict(suggest_chunk(info, length, gpu['free_gib'], gpu['total_gib']), gpu=gpu['gpu'])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.get('/api/system')
 def system():
     import torch
@@ -278,11 +306,16 @@ async def save_upload(upload, target):
 async def create_job(video: UploadFile | None = File(None), hint: UploadFile | None = File(None),
                      source: str = Form(''), quality: float = Form(.95), carry: bool = Form(True),
                      saved_source: str = Form(''), saved_hint: str = Form(''), project_id: str = Form('default'),
-                     length_mode: str = Form('full'), frame_count: str = Form(''), seconds: str = Form('')):
+                     length_mode: str = Form('full'), frame_count: str = Form(''), seconds: str = Form(''),
+                     chunk_size: str = Form('auto'), low_vram: bool = Form(False)):
     if not project_path(project_id).exists():
         raise HTTPException(404, 'Project not found')
     if not 0 <= quality <= 1:
         raise HTTPException(400, 'Hint confidence must be between 0 and 1.')
+    try:
+        chunk_size = validate_chunk(chunk_size)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     jid = uuid.uuid4().hex
     folder = INPUTS/jid
     folder.mkdir()
@@ -334,7 +367,8 @@ async def create_job(video: UploadFile | None = File(None), hint: UploadFile | N
     if not carry:
         cmd += ['--no_carry_hint']
     jobs[jid] = dict(id=jid, name=name, status='queued', files=[], metadata=info, hinted=bool(hint_path),
-                     project_id=project_id, created_at=time.time(), processing_length=processing_length)
+                     project_id=project_id, created_at=time.time(), processing_length=processing_length,
+                     chunk_size=chunk_size, low_vram=low_vram)
     (out/'job.json').write_text(json.dumps(jobs[jid]), encoding='utf-8')
     pending.put((jid, cmd, out))
     return jobs[jid]
@@ -409,6 +443,17 @@ def worker():
                 with job_control.lock:
                     job_control.check(jid)
                     job['status'] = 'running'
+                gpu = gpu_memory()
+                if gpu is None:
+                    raise RuntimeError('CUDA is unavailable. Inference requires an NVIDIA GPU.')
+                recommendation = apply_chunk(job, cmd, gpu)
+                settings = job.get('chunk_settings', {})
+                print(f"Temporal chunk: {settings.get('chunk')} frames, stride={settings.get('stride')}, "
+                      f"low_vram={settings.get('low_vram')} ({'automatic' if settings.get('automatic') else 'manual'}); "
+                      f"{gpu['free_gib']:.1f} GiB GPU memory free before model loading.", file=log, flush=True)
+                if not recommendation['fits']:
+                    print('WARNING: Available GPU memory is below the conservative estimate even for one frame. '
+                          'Close other GPU applications or reduce the source resolution.', file=log, flush=True)
                 inference_started = time.perf_counter()
                 try:
                     code = job_control.run(jid, cmd, cwd=ROOT/'engine', stdout=log,

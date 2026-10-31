@@ -11,6 +11,7 @@ import unittest
 import uuid
 
 from inference_length import resolve_length
+from chunk_settings import validate_chunk
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -61,7 +62,7 @@ class InferenceLengthTests(unittest.TestCase):
             ns = dict(ROOT=root, INPUTS=root/'inputs', Path=Path, sys=sys, time=time,
                       uuid=uuid, json=json, jobs={}, pending=queue.Queue(),
                       project_path=lambda pid: project, asset_path=lambda aid: source,
-                      get_ui_state=lambda pid: {}, resolve_length=resolve_length,
+                      get_ui_state=lambda pid: {}, resolve_length=resolve_length, validate_chunk=validate_chunk,
                       probe=lambda path: dict(width=320, height=240, fps=30, duration=10),
                       HTTPException=ApiError, UploadFile=type('UploadFile', (), {}),
                       File=lambda value: value, Form=lambda value: value)

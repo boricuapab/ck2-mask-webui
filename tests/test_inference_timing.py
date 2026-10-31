@@ -45,7 +45,9 @@ class InferenceTimingTests(unittest.TestCase):
                 namespace = dict(ROOT=root, jobs=jobs, pending=pending, time=clock,
                                  models_ready=Mock(return_value=False), ensure_models=download,
                                  os=os, json=json, subprocess=subprocess_mock,
-                                 job_control=control, save_job=save_job, JobStopped=RuntimeError)
+                                 job_control=control, save_job=save_job, JobStopped=RuntimeError,
+                                 gpu_memory=lambda: {'free_gib': 14.8},
+                                 apply_chunk=lambda *args: {'fits': True})
                 exec(compile(ast.Module(body=[worker], type_ignores=[]), 'app.py', 'exec'), namespace)
                 with self.assertRaises(StopIteration):
                     namespace['worker']()

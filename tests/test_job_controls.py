@@ -42,7 +42,8 @@ def functions(root, controller):
     namespace = dict(ROOT=root, jobs={}, pending=WorkerQueue(), job_control=controller,
                      ACTIVE_JOB_STATUSES={'queued', 'downloading', 'running', 'stopping'},
                      os=os, json=json, time=time, subprocess=subprocess, JobStopped=JobStopped,
-                     HTTPException=ApiError, models_ready=lambda root: True)
+                     HTTPException=ApiError, models_ready=lambda root: True,
+                     gpu_memory=lambda: {'free_gib': 14.8}, apply_chunk=lambda *args: {'fits': True})
     exec(compile(ast.Module(body=nodes, type_ignores=[]), 'app.py', 'exec'), namespace)
     return namespace
 
