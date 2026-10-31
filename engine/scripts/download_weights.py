@@ -19,10 +19,13 @@ import argparse
 import base64
 import hashlib
 import shutil
+import sys
 import urllib.request
 from pathlib import Path
 
 from huggingface_hub import hf_hub_download, snapshot_download
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from model_variants import MODEL_VARIANTS, get_variant
 
 CORRIDORKEY_REPO = "nikopueringer/CorridorKey2.0"
 CORRIDORKEY_FILES = ("corridorkey_v2.safetensors", "foundation_stats.safetensors")
@@ -46,8 +49,14 @@ def _md5_b64(path: Path) -> str:
     return base64.b64encode(digest.digest()).decode()
 
 
-def download_corridorkey(root: Path, repo: str, revision: str | None) -> None:
-    for name in CORRIDORKEY_FILES:
+def download_corridorkey(root: Path, repo: str, revision: str | None, variant='fp32') -> None:
+    if variant == 'int8_convrot':
+        selected = get_variant(variant)
+        print(f"[corridorkey] {selected['filename']} (INT8 ConvRot)")
+        hf_hub_download(selected['repo'], selected['filename'], revision=selected['revision'],
+                        local_dir=root / 'weights')
+    names = CORRIDORKEY_FILES if variant == 'fp32' else ('foundation_stats.safetensors',)
+    for name in names:
         print(f"[corridorkey] {name}")
         hf_hub_download(repo, name, revision=revision, local_dir=root / "weights")
 
@@ -88,13 +97,14 @@ def main():
     ap.add_argument("--package_root", default=str(Path(__file__).resolve().parents[1]))
     ap.add_argument("--corridorkey_repo", default=CORRIDORKEY_REPO)
     ap.add_argument("--corridorkey_revision", default=None)
+    ap.add_argument('--model_variant', choices=tuple(MODEL_VARIANTS), default='fp32')
     ap.add_argument("--skip_corridorkey", action="store_true",
                     help="Only fetch the third-party foundation models.")
     args = ap.parse_args()
 
     root = Path(args.package_root).resolve()
     if not args.skip_corridorkey:
-        download_corridorkey(root, args.corridorkey_repo, args.corridorkey_revision)
+        download_corridorkey(root, args.corridorkey_repo, args.corridorkey_revision, args.model_variant)
     download_cradio(root)
     download_moge(root)
     download_rvm(root)

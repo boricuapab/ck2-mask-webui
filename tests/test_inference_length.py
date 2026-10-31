@@ -12,6 +12,7 @@ import uuid
 
 from inference_length import resolve_length
 from chunk_settings import validate_chunk
+from engine.model_variants import get_variant
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -59,10 +60,11 @@ class InferenceLengthTests(unittest.TestCase):
             project.write_text('{}')
             source = root / 'sample.mp4'
             source.touch()
-            ns = dict(ROOT=root, INPUTS=root/'inputs', Path=Path, sys=sys, time=time,
+            ns = dict(ROOT=root, INPUTS=root/'inputs', MODELS=root/'models', Path=Path, sys=sys, time=time,
                       uuid=uuid, json=json, jobs={}, pending=queue.Queue(),
                       project_path=lambda pid: project, asset_path=lambda aid: source,
                       get_ui_state=lambda pid: {}, resolve_length=resolve_length, validate_chunk=validate_chunk,
+                      get_variant=get_variant,
                       probe=lambda path: dict(width=320, height=240, fps=30, duration=10),
                       HTTPException=ApiError, UploadFile=type('UploadFile', (), {}),
                       File=lambda value: value, Form=lambda value: value)
@@ -79,6 +81,12 @@ class InferenceLengthTests(unittest.TestCase):
                 saved = json.loads((out / 'job.json').read_text())
                 self.assertEqual(saved['processing_length'], job['processing_length'])
                 self.assertEqual(saved['processing_length']['mode'], mode)
+                self.assertEqual(job['model_variant'], 'fp32')
+                self.assertTrue(cmd[cmd.index('--weights')+1].endswith('corridorkey_v2.safetensors'))
+            job = asyncio.run(ns['create_job'](saved_source='source', model_variant='int8_convrot'))
+            _, cmd, _ = ns['pending'].get_nowait()
+            self.assertEqual(job['model_variant'], 'int8_convrot')
+            self.assertTrue(cmd[cmd.index('--weights')+1].endswith('corridorkey_v2_int8_convrot.safetensors'))
             before = ns['pending'].qsize()
             with self.assertRaises(ApiError) as error:
                 asyncio.run(ns['create_job'](saved_source='source', length_mode='frames', frame_count='0'))

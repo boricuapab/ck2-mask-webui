@@ -85,7 +85,7 @@ class ChunkSettingsTests(unittest.TestCase):
             def save_job(record):
                 (out/'job.json').write_text(json.dumps(record))
             ns = dict(ROOT=root, jobs={'job': job}, pending=pending, job_control=control,
-                      os=os, subprocess=subprocess, time=time, models_ready=lambda root: True,
+                      os=os, subprocess=subprocess, time=time, models_ready=lambda root, **kwargs: True,
                       gpu_memory=lambda: dict(free_gib=14.8, total_gib=16), apply_chunk=apply_chunk,
                       save_job=save_job, JobStopped=RuntimeError)
             exec(compile(ast.Module(body=[worker], type_ignores=[]), 'app.py', 'exec'), ns)

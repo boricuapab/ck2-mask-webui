@@ -13,6 +13,7 @@ from model_assets import ensure_models, models_ready
 from job_control import JobControl, JobStopped
 from inference_length import resolve_length
 from chunk_settings import apply_chunk, suggest_chunk, validate_chunk
+from engine.model_variants import get_variant
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -307,13 +308,15 @@ async def create_job(video: UploadFile | None = File(None), hint: UploadFile | N
                      source: str = Form(''), quality: float = Form(.95), carry: bool = Form(True),
                      saved_source: str = Form(''), saved_hint: str = Form(''), project_id: str = Form('default'),
                      length_mode: str = Form('full'), frame_count: str = Form(''), seconds: str = Form(''),
-                     chunk_size: str = Form('auto'), low_vram: bool = Form(False)):
+                     chunk_size: str = Form('auto'), low_vram: bool = Form(False),
+                     model_variant: str = Form('fp32')):
     if not project_path(project_id).exists():
         raise HTTPException(404, 'Project not found')
     if not 0 <= quality <= 1:
         raise HTTPException(400, 'Hint confidence must be between 0 and 1.')
     try:
         chunk_size = validate_chunk(chunk_size)
+        selected_model = get_variant(model_variant)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     jid = uuid.uuid4().hex
@@ -361,14 +364,16 @@ async def create_job(video: UploadFile | None = File(None), hint: UploadFile | N
     cmd = [sys.executable, '-u', str(ROOT/'engine/infer.py'), '--input', str(path),
            '--output_dir', str(out), '--outputs', 'alpha', 'fg', 'checker', 'cutout',
            '--pix_fmt', 'yuv420p', '--hint_quality', str(quality),
-           '--num_frames', str(processing_length['num_frames']), '--start_mode', 'begin']
+           '--num_frames', str(processing_length['num_frames']), '--start_mode', 'begin',
+           '--weights', str(MODELS/'weights'/selected_model['filename'])]
     if hint_path:
         cmd += ['--hint_video', str(hint_path)]
     if not carry:
         cmd += ['--no_carry_hint']
     jobs[jid] = dict(id=jid, name=name, status='queued', files=[], metadata=info, hinted=bool(hint_path),
                      project_id=project_id, created_at=time.time(), processing_length=processing_length,
-                     chunk_size=chunk_size, low_vram=low_vram)
+                     chunk_size=chunk_size, low_vram=low_vram, model_variant=model_variant,
+                     model_label=selected_model['label'])
     (out/'job.json').write_text(json.dumps(jobs[jid]), encoding='utf-8')
     pending.put((jid, cmd, out))
     return jobs[jid]
@@ -435,11 +440,14 @@ def worker():
                 print('Processing length: '+job.get('processing_length', {}).get('label', 'Full shot')+
                       '. Limited runs start at the beginning and stop at the end of the source if shorter.',
                       file=log, flush=True)
-                if not models_ready(ROOT):
+                variant = job.get('model_variant', 'fp32')
+                print('Model: '+job.get('model_label', 'FP32 (default)'), file=log, flush=True)
+                if not models_ready(ROOT, variant=variant):
                     with job_control.lock:
                         job_control.check(jid)
                         job['status'] = 'downloading'
-                    ensure_models(ROOT, log, runner=lambda cmd, **kwargs: job_control.run(jid, cmd, **kwargs))
+                    ensure_models(ROOT, log, runner=lambda cmd, **kwargs: job_control.run(jid, cmd, **kwargs),
+                                  variant=variant)
                 with job_control.lock:
                     job_control.check(jid)
                     job['status'] = 'running'

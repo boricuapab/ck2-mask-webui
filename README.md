@@ -39,9 +39,12 @@ The environment includes `hf-xet` for accelerated downloads from Hugging Face Xe
 
 Model weights are **not included in this repository**. Submit a clip with **Process on GPU** to download missing assets automatically before inference. The job displays a download status; expand **Processing log** for details. The first job may take several minutes before GPU processing begins.
 
+Use **Inference model** to choose **FP32** (the default original checkpoint) or **INT8 ConvRot**, converted by boricuapab. The choice is saved per project and captured when each job is submitted, so changing the dropdown does not change queued jobs. Only the selected main checkpoint is required or downloaded; both variants share foundation statistics and the three foundation models. Each render shows its model in the result card and processing log. Existing projects and API requests default to FP32. The FP32 label describes checkpoint storage; the engine retains its existing mixed-precision inference behavior.
+
 | Asset | Download source | Local destination |
 | --- | --- | --- |
 | CorridorKey 2.0 and foundation statistics | [CorridorKey on Hugging Face](https://huggingface.co/nikopueringer/CorridorKey2.0) | `models/weights/` |
+| Optional INT8 ConvRot checkpoint | [boricuapab's converted model](https://huggingface.co/boricuapab/corridorkey_v2_int8_convrot) | `models/weights/corridorkey_v2_int8_convrot.safetensors` |
 | C-RADIOv4-SO400M | [NVIDIA](https://huggingface.co/nvidia/C-RADIOv4-SO400M) | `models/vfms/cradio/C-RADIOv4-SO400M/` |
 | MoGe-2 ViT-B | [MoGe weights](https://huggingface.co/Ruicheng/moge-2-vitb-normal) | `models/vfms/moge/` |
 | RVM small | [Google DeepMind](https://github.com/google-deepmind/representations4d) | `models/vfms/rvm/` |
@@ -53,6 +56,14 @@ To download the models ahead of time:
 ```powershell
 uv run --locked --no-sync python engine/scripts/download_weights.py --package_root models
 ```
+
+To download the INT8 variant instead:
+
+```powershell
+uv run --locked --no-sync python engine/scripts/download_weights.py --model_variant int8_convrot --package_root models
+```
+
+The INT8 checkpoint revision is pinned in `engine/model_variants.py`. Its 167 quantized linear layers keep INT8 weights, apply the matching regular-Hadamard ConvRot transform, dynamically quantize activations, and use INT8 CUDA matrix multiplication. The loader implements the [Comfy Quants W8A8 checkpoint format](https://github.com/Comfy-Org/comfy-quants/blob/main/docs/formats/int8_w8a8.md); ComfyUI is not required. Quantization can change output quality and performance. Chunk suggestions retain the conservative FP32 memory estimates for both variants rather than assuming that all inference memory scales with checkpoint size.
 
 ## Use the interface
 

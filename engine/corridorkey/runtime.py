@@ -198,6 +198,7 @@ def load_runtime_checkpoint(path: Path) -> dict:
             "format": header.get("format"),
             "model_config": json.loads(header.get("model_config", "{}")),
             "metadata": json.loads(header.get("metadata", "{}")),
+            "quantization": json.loads(header.get("corridorkey_quantization", "{}")),
             "state_dict": load_file(str(path), device="cpu"),
         }
     return torch.load(path, map_location="cpu", weights_only=False, mmap=True)
@@ -220,6 +221,13 @@ def load_model(paths: RuntimePaths, device: str = "cuda") -> CorridorKeyV3:
 
     print(f"Loading CorridorKey v2 runtime weights: {paths.weights}")
     model = CorridorKeyV3(**cfg)
+    quantization = ckpt.get('quantization', {})
+    if quantization:
+        from .int8_convrot import install_int8_linears
+        count = install_int8_linears(model, ckpt['state_dict'], quantization)
+        print(f'  INT8 ConvRot: {count} quantized linears; dynamic INT8 activations and INT8 CUDA matmul')
+    elif any(key.endswith('.comfy_quant') for key in ckpt['state_dict']):
+        raise RuntimeError('Quantized weights are missing corridorkey_quantization metadata.')
     missing, unexpected = model.load_state_dict(ckpt["state_dict"], strict=False)
     train_missing = [k for k in missing if not k.startswith("foundations.")]
     train_unexpected = [k for k in unexpected if not k.startswith("foundations.")]

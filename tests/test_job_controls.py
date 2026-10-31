@@ -42,7 +42,7 @@ def functions(root, controller):
     namespace = dict(ROOT=root, jobs={}, pending=WorkerQueue(), job_control=controller,
                      ACTIVE_JOB_STATUSES={'queued', 'downloading', 'running', 'stopping'},
                      os=os, json=json, time=time, subprocess=subprocess, JobStopped=JobStopped,
-                     HTTPException=ApiError, models_ready=lambda root: True,
+                     HTTPException=ApiError, models_ready=lambda root, **kwargs: True,
                      gpu_memory=lambda: {'free_gib': 14.8}, apply_chunk=lambda *args: {'fits': True})
     exec(compile(ast.Module(body=nodes, type_ignores=[]), 'app.py', 'exec'), namespace)
     return namespace
@@ -72,8 +72,8 @@ class JobControlTests(unittest.TestCase):
             marker = root / 'downloading'
             controller = JobControl()
             ns = functions(root, controller)
-            ns['models_ready'] = lambda root: False
-            def download(root, log, runner):
+            ns['models_ready'] = lambda root, **kwargs: False
+            def download(root, log, runner, **kwargs):
                 runner([sys.executable, '-c',
                         'from pathlib import Path; import sys,time; Path(sys.argv[1]).touch(); time.sleep(60)',
                         str(marker)], stdout=log, stderr=subprocess.STDOUT, check=True)
