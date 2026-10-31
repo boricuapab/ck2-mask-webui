@@ -309,11 +309,13 @@ async def create_job(video: UploadFile | None = File(None), hint: UploadFile | N
                      saved_source: str = Form(''), saved_hint: str = Form(''), project_id: str = Form('default'),
                      length_mode: str = Form('full'), frame_count: str = Form(''), seconds: str = Form(''),
                      chunk_size: str = Form('auto'), low_vram: bool = Form(False),
-                     model_variant: str = Form('fp32')):
+                     model_variant: str = Form('fp32'), despill_strength: float = Form(0.5)):
     if not project_path(project_id).exists():
         raise HTTPException(404, 'Project not found')
     if not 0 <= quality <= 1:
         raise HTTPException(400, 'Hint confidence must be between 0 and 1.')
+    if not 0 <= despill_strength <= 1:
+        raise HTTPException(400, 'Despill strength must be between 0 (off) and 1 (full).')
     try:
         chunk_size = validate_chunk(chunk_size)
         selected_model = get_variant(model_variant)
@@ -365,7 +367,8 @@ async def create_job(video: UploadFile | None = File(None), hint: UploadFile | N
            '--output_dir', str(out), '--outputs', 'alpha', 'fg', 'checker', 'cutout',
            '--pix_fmt', 'yuv420p', '--hint_quality', str(quality),
            '--num_frames', str(processing_length['num_frames']), '--start_mode', 'begin',
-           '--weights', str(MODELS/'weights'/selected_model['filename'])]
+           '--weights', str(MODELS/'weights'/selected_model['filename']),
+           '--despill_strength', str(despill_strength)]
     if hint_path:
         cmd += ['--hint_video', str(hint_path)]
     if not carry:
@@ -373,7 +376,7 @@ async def create_job(video: UploadFile | None = File(None), hint: UploadFile | N
     jobs[jid] = dict(id=jid, name=name, status='queued', files=[], metadata=info, hinted=bool(hint_path),
                      project_id=project_id, created_at=time.time(), processing_length=processing_length,
                      chunk_size=chunk_size, low_vram=low_vram, model_variant=model_variant,
-                     model_label=selected_model['label'])
+                     model_label=selected_model['label'], despill_strength=despill_strength)
     (out/'job.json').write_text(json.dumps(jobs[jid]), encoding='utf-8')
     pending.put((jid, cmd, out))
     return jobs[jid]
@@ -442,6 +445,9 @@ def worker():
                       file=log, flush=True)
                 variant = job.get('model_variant', 'fp32')
                 print('Model: '+job.get('model_label', 'FP32 (default)'), file=log, flush=True)
+                print(f"Despill strength: {job.get('despill_strength', 0.5):.0%} "
+                      '(checkerboard and transparent cutout only; alpha and raw foreground unchanged).',
+                      file=log, flush=True)
                 if not models_ready(ROOT, variant=variant):
                     with job_control.lock:
                         job_control.check(jid)

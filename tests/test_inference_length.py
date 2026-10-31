@@ -83,10 +83,20 @@ class InferenceLengthTests(unittest.TestCase):
                 self.assertEqual(saved['processing_length']['mode'], mode)
                 self.assertEqual(job['model_variant'], 'fp32')
                 self.assertTrue(cmd[cmd.index('--weights')+1].endswith('corridorkey_v2.safetensors'))
+                self.assertEqual(cmd[cmd.index('--despill_strength')+1], '0.5')
             job = asyncio.run(ns['create_job'](saved_source='source', model_variant='int8_convrot'))
             _, cmd, _ = ns['pending'].get_nowait()
             self.assertEqual(job['model_variant'], 'int8_convrot')
             self.assertTrue(cmd[cmd.index('--weights')+1].endswith('corridorkey_v2_int8_convrot.safetensors'))
+            for strength in (0, .1, 1):
+                job = asyncio.run(ns['create_job'](saved_source='source', despill_strength=strength))
+                _, cmd, out = ns['pending'].get_nowait()
+                self.assertEqual(float(cmd[cmd.index('--despill_strength')+1]), strength)
+                self.assertEqual(json.loads((out/'job.json').read_text())['despill_strength'], strength)
+            for strength in (-.1, 1.1, float('nan'), float('inf')):
+                with self.subTest(strength=strength), self.assertRaises(ApiError) as error:
+                    asyncio.run(ns['create_job'](saved_source='source', despill_strength=strength))
+                self.assertEqual(error.exception.status_code, 400)
             before = ns['pending'].qsize()
             with self.assertRaises(ApiError) as error:
                 asyncio.run(ns['create_job'](saved_source='source', length_mode='frames', frame_count='0'))
