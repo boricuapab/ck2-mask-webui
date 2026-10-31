@@ -35,6 +35,8 @@ The default environment uses the checked-in `uv.lock`: Python 3.12, PyTorch 2.13
 
 ## First inference and model downloads
 
+The environment includes `hf-xet` for accelerated downloads from Hugging Face Xet storage. Existing installations can run `uv sync --locked` after updating, then restart the app to use it.
+
 Model weights are **not included in this repository**. Submit a clip with **Process on GPU** to download missing assets automatically before inference. The job displays a download status; expand **Processing log** for details. The first job may take several minutes before GPU processing begins.
 
 | Asset | Download source | Local destination |

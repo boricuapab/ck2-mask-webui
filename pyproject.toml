@@ -16,6 +16,7 @@ dependencies = [
     "fsspec==2026.9.0",
     "glcontext==3.1.0",
     "h11==0.16.0",
+    "hf-xet==1.8.0",
     "huggingface_hub==0.36.2",
     "idna==3.20",
     "Jinja2==3.1.6",
