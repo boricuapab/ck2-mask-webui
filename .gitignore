@@ -1,0 +1,39 @@
+# Environments, downloaded tools, and caches
+.venv*/
+.tools/
+python/
+__pycache__/
+*.py[cod]
+.cache/
+.pytest_cache/
+*.egg-info/
+
+# User media, generated results, and saved sessions
+inputs/
+outputs/
+uploads/
+projects/
+conversions/
+grnscrnvids/
+ui-state.json*
+*.log
+
+# Downloaded inference assets (including legacy engine locations)
+/models/
+weights/
+vfms/
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.npz
+*.ckpt
+
+# Local settings and credentials
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
