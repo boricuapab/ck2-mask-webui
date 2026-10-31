@@ -60,7 +60,7 @@ uv run --locked --no-sync python engine/scripts/download_weights.py --package_ro
 2. Upload a source video or select one from the local clip library. To populate the library manually, place clips in `inputs/`.
 3. Optionally convert to 720p, 1080p, or 4K at 24, 30, 48, 60, 96, or 120 fps. Conversion preserves duration and aspect ratio with padding; it drops or duplicates frames without motion interpolation. Click **Use converted footage** afterward.
 4. Optionally attach a hint-mask video: white keeps the subject; black removes the background. Match source dimensions, frame rate, duration, and frame alignment. Paired source/hint conversion is available.
-5. Adjust hint confidence and temporal hint carry, then click **Process on GPU**. Jobs run one at a time and show temporal-window progress and processing logs.
+5. Adjust hint confidence and temporal hint carry, then click **Process on GPU**. Jobs run one at a time and show temporal-window progress and processing logs. Completed renders show elapsed inference time in the result card and processing log, including model loading and output writing but excluding queue wait and model downloads. Timing is saved with render history; older renders without recorded timing keep their existing display.
 6. Preview and download completed results.
 
 Each render produces an alpha-matte MP4, foreground MP4, checkerboard-preview MP4, and transparent ProRes 4444 MOV. Use the MOV for compositing; browser playback may not display its transparency. **Inference outputs omit source audio.** Footage conversion preserves audio as AAC when present.

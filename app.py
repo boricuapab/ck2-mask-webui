@@ -341,8 +341,12 @@ def worker():
                     job['status'] = 'downloading'
                     ensure_models(ROOT, log)
                 job['status'] = 'running'
+                inference_started = time.perf_counter()
                 process = subprocess.Popen(cmd, cwd=ROOT/'engine', stdout=log, stderr=subprocess.STDOUT, env=env)
                 code = process.wait()
+                job['inference_seconds'] = round(time.perf_counter() - inference_started, 2)
+                outcome = 'completed' if code == 0 else 'failed'
+                print(f"\nInference {outcome} in {job['inference_seconds']:.2f} seconds (excluding queue wait and model downloads).", file=log, flush=True)
             job['status'] = 'complete' if code == 0 else 'failed'
             job['files'] = [p.name for p in out.iterdir() if p.suffix in {'.mp4', '.mov'}]
         except Exception as e:
