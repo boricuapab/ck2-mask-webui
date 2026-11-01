@@ -57,11 +57,15 @@ class SessionTests(unittest.TestCase):
                 self.assertNotIn('sourceAsset',missing)
                 self.assertNotIn('hintAsset',missing)
             finally: moved.rename(path)
-            job={'id':output.name,'name':'Test','project_id':pid,'status':'complete','files':['missing.mp4'],'metadata':{}}
+            job={'id':output.name,'name':'Test','project_id':pid,'status':'complete','files':['missing.mp4'],
+                 'metadata':{},'source_relative':clip.relative_to(ROOT/'inputs').as_posix()}
             (output/'job.json').write_text(json.dumps(job),encoding='utf-8')
             history=requests.get(BASE+'/api/jobs',params={'project_id':pid}).json()
             self.assertEqual(len(history),1)
             self.assertEqual(history[0]['files'],[])
+            original=requests.get(BASE+'/api/jobs/'+output.name+'/source',headers={'Range':'bytes=0-9'})
+            self.assertEqual(original.status_code,206,original.text)
+            self.assertEqual(len(original.content),10)
             self.assertNotIn(output.name,[j['id'] for j in requests.get(BASE+'/api/jobs').json()])
             self.assertEqual(requests.patch(BASE+'/api/projects/'+pid,json={'name':'Renamed project'}).status_code,200)
             self.assertIn('Renamed project',[p['name'] for p in requests.get(BASE+'/api/projects').json()])

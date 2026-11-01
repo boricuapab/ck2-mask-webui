@@ -16,6 +16,7 @@ from inference_length import resolve_length
 from chunk_settings import apply_chunk, suggest_chunk, validate_chunk
 from engine.model_variants import get_variant
 from engine.hint_frames import validate_hint_frame
+from compare_source import find_job_source
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -427,6 +428,7 @@ async def create_job(video: UploadFile | None = File(None), hint: UploadFile | N
     jobs[jid] = dict(id=jid, name=name, status='queued', files=[], metadata=info,
                      hinted=bool(hint_path or hint_image_path), hint_label=hint_label,
                      hint_frame=hint_frame if hint_image_path else None,
+                     source_relative=path.relative_to(INPUTS).as_posix(),
                      project_id=project_id, created_at=time.time(), processing_length=processing_length,
                      chunk_size=chunk_size, low_vram=low_vram, model_variant=model_variant,
                      model_label=selected_model['label'], despill_strength=despill_strength)
@@ -454,6 +456,14 @@ def get_job(jid):
     if job['status'] in ACTIVE_JOB_STATUSES:
         job['status'] = 'interrupted'
     return job
+
+
+@app.get('/api/jobs/{jid}/source')
+def job_source(jid: str):
+    source = find_job_source(get_job(jid), INPUTS)
+    if source is None:
+        raise HTTPException(404, 'Original footage is missing or cannot be identified uniquely.')
+    return FileResponse(source)
 
 
 @app.post('/api/jobs/{jid}/stop')

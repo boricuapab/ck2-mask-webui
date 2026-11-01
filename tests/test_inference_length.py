@@ -61,7 +61,7 @@ class InferenceLengthTests(unittest.TestCase):
             (root / 'outputs').mkdir()
             project = root / 'project.json'
             project.write_text('{}')
-            source = root / 'sample.mp4'
+            source = root / 'inputs' / 'sample.mp4'
             source.touch()
             hint_image = root/'mask.png'
             Image.new('L', (320, 240), 255).save(hint_image)
@@ -89,6 +89,7 @@ class InferenceLengthTests(unittest.TestCase):
                 self.assertEqual(saved['processing_length'], job['processing_length'])
                 self.assertEqual(saved['processing_length']['mode'], mode)
                 self.assertEqual(job['model_variant'], 'fp32')
+                self.assertEqual(job['source_relative'], 'sample.mp4')
                 self.assertTrue(cmd[cmd.index('--weights')+1].endswith('corridorkey_v2.safetensors'))
                 self.assertEqual(cmd[cmd.index('--despill_strength')+1], '0.5')
             job = asyncio.run(ns['create_job'](saved_source='source', model_variant='int8_convrot'))
