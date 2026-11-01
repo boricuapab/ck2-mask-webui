@@ -2,6 +2,7 @@
 import ast
 import asyncio
 import json
+import math
 from pathlib import Path
 import queue
 import sys
@@ -13,6 +14,8 @@ import uuid
 from inference_length import resolve_length
 from chunk_settings import validate_chunk
 from engine.model_variants import get_variant
+from engine.hint_frames import validate_hint_frame
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -60,11 +63,15 @@ class InferenceLengthTests(unittest.TestCase):
             project.write_text('{}')
             source = root / 'sample.mp4'
             source.touch()
+            hint_image = root/'mask.png'
+            Image.new('L', (320, 240), 255).save(hint_image)
             ns = dict(ROOT=root, INPUTS=root/'inputs', MODELS=root/'models', Path=Path, sys=sys, time=time,
                       uuid=uuid, json=json, jobs={}, pending=queue.Queue(),
-                      project_path=lambda pid: project, asset_path=lambda aid: source,
+                      project_path=lambda pid: project,
+                      asset_path=lambda aid, **kwargs: hint_image if aid == 'image' else source,
                       get_ui_state=lambda pid: {}, resolve_length=resolve_length, validate_chunk=validate_chunk,
                       get_variant=get_variant,
+                      validate_hint_frame=validate_hint_frame, math=math,
                       probe=lambda path: dict(width=320, height=240, fps=30, duration=10),
                       HTTPException=ApiError, UploadFile=type('UploadFile', (), {}),
                       File=lambda value: value, Form=lambda value: value)
@@ -97,6 +104,21 @@ class InferenceLengthTests(unittest.TestCase):
                 with self.subTest(strength=strength), self.assertRaises(ApiError) as error:
                     asyncio.run(ns['create_job'](saved_source='source', despill_strength=strength))
                 self.assertEqual(error.exception.status_code, 400)
+            job = asyncio.run(ns['create_job'](saved_source='source', saved_hint_image='image',
+                                              hint_frame=61, length_mode='seconds', seconds='2.5'))
+            _, cmd, _ = ns['pending'].get_nowait()
+            self.assertEqual(cmd[cmd.index('--hint_frame_index')+1], '60')
+            self.assertEqual(cmd[cmd.index('--hint_first_frame')+1], str(hint_image))
+            self.assertTrue(job['hinted'])
+            self.assertEqual(job['hint_label'], 'PNG hint · frame 61')
+            for frame in (0, 76):
+                with self.subTest(frame=frame), self.assertRaises(ApiError):
+                    asyncio.run(ns['create_job'](saved_source='source', saved_hint_image='image',
+                                                hint_frame=frame, length_mode='seconds', seconds='2.5'))
+            Image.new('L', (100, 100)).save(hint_image)
+            with self.assertRaises(ApiError) as mismatch:
+                asyncio.run(ns['create_job'](saved_source='source', saved_hint_image='image'))
+            self.assertIn('dimensions', str(mismatch.exception))
             before = ns['pending'].qsize()
             with self.assertRaises(ApiError) as error:
                 asyncio.run(ns['create_job'](saved_source='source', length_mode='frames', frame_count='0'))

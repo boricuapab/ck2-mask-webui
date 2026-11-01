@@ -52,8 +52,10 @@ def main():
     ap.add_argument("--weights", default=None,
                     help="Runtime checkpoint (.safetensors or legacy .pt). "
                          "Defaults to weights/corridorkey_v2.safetensors.")
+    ap.add_argument('--hint_frame_index', type=int, default=0,
+                    help='Zero-based source frame for the PNG hint; defaults to the first frame.')
     ap.add_argument("--hint_first_frame", default=None,
-                    help="Optional matte image/dir; first frame only.")
+                    help="Optional matte image/dir; placed at --hint_frame_index (default: first frame).")
     ap.add_argument("--hint_video", default=None,
                     help="Optional full-frame hint video or frame directory.")
     ap.add_argument("--hint_quality", type=float, default=0.95)
@@ -141,6 +143,7 @@ def main():
         auto_vram=auto_vram,
         carry_hint=not args.no_carry_hint,
         hint_quality=args.hint_quality,
+        hint_frame_index=args.hint_frame_index,
         carry_hint_quality=args.carry_hint_quality,
         model_scale=args.model_scale,
         num_frames=args.num_frames,

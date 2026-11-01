@@ -1,5 +1,6 @@
 """Loopback-only CorridorKey workstation. Run with the project venv."""
 import json
+import math
 import os
 import queue
 import subprocess
@@ -14,6 +15,7 @@ from job_control import JobControl, JobStopped
 from inference_length import resolve_length
 from chunk_settings import apply_chunk, suggest_chunk, validate_chunk
 from engine.model_variants import get_variant
+from engine.hint_frames import validate_hint_frame
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -173,11 +175,12 @@ def rename_project(project_id: str, data: dict = Body(...)):
         temp.replace(path)
     return project
 
-def asset_path(asset_id):
+def asset_path(asset_id, allow_image=False):
     if not isinstance(asset_id, str) or not asset_id.isalnum():
         return None
     for folder in (INPUTS/asset_id, CONVERTED/asset_id):
-        path = next((p for p in folder.glob('*') if p.suffix.lower() in EXTENSIONS and p.name != 'encoding.mp4'), None)
+        extensions = EXTENSIONS | {'.png'} if allow_image else EXTENSIONS
+        path = next((p for p in folder.glob('*') if p.suffix.lower() in extensions and p.name != 'encoding.mp4'), None)
         if path:
             return path
     return None
@@ -189,8 +192,8 @@ def get_ui_state(project_id: str = 'default'):
         raise HTTPException(404, 'Project not found')
     with state_lock:
         state = json.loads(path.read_text(encoding='utf-8')).get('state', {})
-    for key in ('sourceAsset', 'hintAsset'):
-        if state.get(key) and asset_path(state[key].get('id')) is None:
+    for key in ('sourceAsset', 'hintAsset', 'hintImageAsset'):
+        if state.get(key) and asset_path(state[key].get('id'), allow_image=key == 'hintImageAsset') is None:
             state.pop(key, None)
     if state.get('source') not in {p.name for p in library()}:
         state['source'] = ''
@@ -226,9 +229,35 @@ async def upload_asset(video: UploadFile = File(...)):
         raise HTTPException(400, 'Cannot decode this video.')
     return dict(id=aid, name=name, **info)
 
+@app.post('/api/hint-images')
+async def upload_hint_image(image: UploadFile = File(...)):
+    from PIL import Image
+    if Path(image.filename or '').suffix.lower() != '.png':
+        raise HTTPException(400, 'Upload a PNG hint mask.')
+    aid = uuid.uuid4().hex
+    folder = INPUTS/aid
+    folder.mkdir(parents=True)
+    path = folder/'hint.png'
+    try:
+        with path.open('wb') as target:
+            while chunk := await image.read(1024*1024):
+                target.write(chunk)
+        with Image.open(path) as png:
+            if png.format != 'PNG':
+                raise ValueError('Not a PNG')
+            width, height = png.size
+            png.verify()
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise HTTPException(400, 'Cannot decode this PNG hint mask.')
+    finally:
+        await image.close()
+    return dict(id=aid, name=Path(image.filename).name, width=width, height=height, kind='png')
+
+
 @app.get('/api/assets/{asset_id}')
 def get_asset(asset_id: str):
-    path = asset_path(asset_id)
+    path = asset_path(asset_id, allow_image=True)
     if path is None:
         raise HTTPException(404)
     return FileResponse(path)
@@ -241,7 +270,9 @@ def probe(path):
     stream = data['streams'][0]
     a, b = map(int, stream['avg_frame_rate'].split('/'))
     return dict(width=stream['width'], height=stream['height'], fps=a/b,
-                duration=float(data['format']['duration']))
+                duration=float(data['format']['duration']),
+                frame_count=int(stream['nb_frames']) if str(stream.get('nb_frames', '')).isdigit()
+                else max(1, math.ceil(float(data['format']['duration'])*a/b)))
 
 def library():
     return sorted(p for folder in (INPUTS, CONVERTED) for p in folder.iterdir()
@@ -309,7 +340,8 @@ async def create_job(video: UploadFile | None = File(None), hint: UploadFile | N
                      saved_source: str = Form(''), saved_hint: str = Form(''), project_id: str = Form('default'),
                      length_mode: str = Form('full'), frame_count: str = Form(''), seconds: str = Form(''),
                      chunk_size: str = Form('auto'), low_vram: bool = Form(False),
-                     model_variant: str = Form('fp32'), despill_strength: float = Form(0.5)):
+                     model_variant: str = Form('fp32'), despill_strength: float = Form(0.5),
+                     saved_hint_image: str = Form(''), hint_frame: int = Form(1)):
     if not project_path(project_id).exists():
         raise HTTPException(404, 'Project not found')
     if not 0 <= quality <= 1:
@@ -361,6 +393,20 @@ async def create_job(video: UploadFile | None = File(None), hint: UploadFile | N
             raise HTTPException(400, 'Cannot decode the hint video.')
         if (info['width'], info['height']) != (hi['width'], hi['height']) or abs(info['fps']-hi['fps']) > .01 or abs(info['duration']-hi['duration']) > 1/info['fps']:
             raise HTTPException(400, 'Hint must match source dimensions, frame rate, and duration (within one frame).')
+    hint_image_path = None
+    if saved_hint_image:
+        from PIL import Image
+        hint_image_path = asset_path(saved_hint_image, allow_image=True)
+        if hint_image_path is None or hint_image_path.suffix.lower() != '.png':
+            raise HTTPException(400, 'Saved PNG hint no longer exists. Upload it again.')
+        with Image.open(hint_image_path) as image:
+            if image.size != (info['width'], info['height']):
+                raise HTTPException(400, 'PNG hint dimensions must match the selected source video.')
+        try:
+            source_frames = info.get('frame_count') or max(1, math.ceil(info['duration']*info['fps']))
+            validate_hint_frame(hint_frame, source_frames, processing_length['num_frames'])
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
     out = ROOT/'outputs'/jid
     out.mkdir()
     cmd = [sys.executable, '-u', str(ROOT/'engine/infer.py'), '--input', str(path),
@@ -371,9 +417,16 @@ async def create_job(video: UploadFile | None = File(None), hint: UploadFile | N
            '--despill_strength', str(despill_strength)]
     if hint_path:
         cmd += ['--hint_video', str(hint_path)]
+    if hint_image_path:
+        cmd += ['--hint_first_frame', str(hint_image_path), '--hint_frame_index', str(hint_frame-1)]
     if not carry:
         cmd += ['--no_carry_hint']
-    jobs[jid] = dict(id=jid, name=name, status='queued', files=[], metadata=info, hinted=bool(hint_path),
+    hint_label = (f'PNG hint · frame {hint_frame}' if hint_image_path else '')
+    if hint_path:
+        hint_label = 'hint video'+(' + '+hint_label if hint_label else '')
+    jobs[jid] = dict(id=jid, name=name, status='queued', files=[], metadata=info,
+                     hinted=bool(hint_path or hint_image_path), hint_label=hint_label,
+                     hint_frame=hint_frame if hint_image_path else None,
                      project_id=project_id, created_at=time.time(), processing_length=processing_length,
                      chunk_size=chunk_size, low_vram=low_vram, model_variant=model_variant,
                      model_label=selected_model['label'], despill_strength=despill_strength)
@@ -445,6 +498,8 @@ def worker():
                       file=log, flush=True)
                 variant = job.get('model_variant', 'fp32')
                 print('Model: '+job.get('model_label', 'FP32 (default)'), file=log, flush=True)
+                if job.get('hint_label'):
+                    print('Hint: '+job['hint_label']+' (frame numbers start at 1).', file=log, flush=True)
                 print(f"Despill strength: {job.get('despill_strength', 0.5):.0%} "
                       '(checkerboard and transparent cutout only; alpha and raw foreground unchanged).',
                       file=log, flush=True)

@@ -13,6 +13,7 @@ import torch
 import torch.nn.functional as F
 
 from . import color_utils as cu
+from hint_frames import inject_frame_hint
 from .model import CorridorKeyV3
 from .video_io import (
     ExrSequenceWriter,
@@ -104,6 +105,7 @@ class InferenceConfig:
     hann_stride: int = 40
     carry_hint: bool = True
     hint_quality: float = 0.95
+    hint_frame_index: int = 0
     carry_hint_quality: float = 0.95
     shape_quantum: int = 128
     model_scale: float = 1.0
@@ -470,10 +472,9 @@ def hann_stage1_stream(model, source, meta, *, reader_cls, reader_kind: str,
                     hint_cpu[0, j] = carry_cache[t_abs]
                     hint_quality_cpu[0, j] = float(carry_hint_quality)
                     hint_present[0, j] = True
-            if initial_hint is not None and t0 == 0:
-                hint_cpu[0, 0] = initial_hint.to(dtype=hint_cpu.dtype)
-                hint_quality_cpu[0, 0] = float(initial_hint_quality)
-                hint_present[0, 0] = True
+            hint_index = int(meta.get('hint_frame_index', 0))
+            inject_frame_hint(hint_cpu, hint_quality_cpu, hint_present, initial_hint,
+                              hint_index, t0, t1, initial_hint_quality)
             if not bool(hint_present.any().item()):
                 hint_quality_cpu.fill_(-1.0)
 
@@ -738,6 +739,13 @@ def run_inference(model, input_path: str, output_dir: str, cfg: InferenceConfig,
             linear_contrast_pivot=cfg.linear_contrast_pivot)
     T_all = int(meta["num_frames"])
     H, W = meta["shape_hw"]
+    if none_path(initial_hint_path) is not None:
+        hint_index = int(cfg.hint_frame_index)-int(meta.get('start_frame', 0))
+        if not 0 <= hint_index < T_all:
+            raise ValueError('PNG hint frame is outside the selected inference range.')
+        meta['hint_frame_index'] = hint_index
+        print(f'  PNG hint: source frame {cfg.hint_frame_index+1} (1-based), '
+              f'inference offset {hint_index}')
     if cfg.auto_vram:
         apply_auto_vram(cfg, (H, W), T_all)
     H_out, W_out = meta["output_hw"]
@@ -790,6 +798,7 @@ def run_inference(model, input_path: str, output_dir: str, cfg: InferenceConfig,
                 if cfg.output_format == "exr":
                     sf.write(f"EXR Pixel Type: {cfg.exr_dtype}\n")
                 sf.write(f"Hint First Frame: {initial_hint_path}\n")
+                sf.write(f"Hint Frame Index (0-based source): {cfg.hint_frame_index}\n")
                 sf.write(f"Hint Video: {hint_video_path}\n")
                 sf.write(f"Hint Quality (Trust): {cfg.hint_quality}\n")
                 sf.write(f"Carry Hint: {cfg.carry_hint}\n")
